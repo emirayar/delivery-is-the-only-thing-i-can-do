@@ -1,2 +1,6 @@
 ﻿<Solution>
+  <Project Path="ExternalAttributes.Core.csproj" />
+  <Project Path="ExternalAttributes.Editor.csproj" />
+  <Project Path="Assembly-CSharp.csproj" />
+  <Project Path="Assembly-CSharp-Editor.csproj" />
 </Solution>
