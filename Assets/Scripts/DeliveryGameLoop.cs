@@ -37,6 +37,10 @@ public sealed class DeliveryGameLoop : MonoBehaviour
     [Tooltip("How long the vehicle must remain parked to deliver.")]
     [Range(0.25f, 4f)] public float deliveryHoldSeconds = 1.35f;
 
+    [Tooltip("Material asset used by the parking outline and floating beacon. "
+           + "Keeping an asset reference prevents its shader from being stripped in builds.")]
+    [SerializeField] private Material markerMaterialTemplate;
+
     [Header("Ending")]
     [Tooltip("Duration of the final camera rise.")]
     [Range(3f, 15f)] public float endingCinematicSeconds = 8f;
@@ -196,6 +200,12 @@ public sealed class DeliveryGameLoop : MonoBehaviour
         markerRoot = new GameObject($"Delivery Stop {completedDeliveries + 1}");
         markerRoot.transform.SetPositionAndRotation(markerPosition, markerRotation);
         EnsureMarkerMaterial();
+        if (markerMaterial == null)
+        {
+            Debug.LogError("Delivery marker could not be created: marker material is missing.");
+            DestroyMarker();
+            return;
+        }
 
         const float border = 0.16f;
         CreateMarkerBar("Left", new Vector3(-parkingWidth * 0.5f, 0f, 0f), new Vector3(border, 0.055f, parkingLength));
@@ -334,10 +344,16 @@ public sealed class DeliveryGameLoop : MonoBehaviour
     {
         if (markerMaterial != null)
             return;
-        Shader shader = Shader.Find("Universal Render Pipeline/Unlit");
-        if (shader == null)
-            shader = Shader.Find("Unlit/Color");
-        markerMaterial = new Material(shader)
+
+        if (markerMaterialTemplate == null)
+        {
+            Debug.LogError(
+                "Delivery marker material template is not assigned. "
+                + "Assign a material asset instead of resolving a shader at runtime.");
+            return;
+        }
+
+        markerMaterial = new Material(markerMaterialTemplate)
         {
             name = "Delivery Marker (Runtime)",
             hideFlags = HideFlags.HideAndDontSave

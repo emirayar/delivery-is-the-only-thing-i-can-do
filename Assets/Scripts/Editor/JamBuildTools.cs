@@ -6,23 +6,14 @@ using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 
-[InitializeOnLoad]
 public static class JamBuildTools
 {
     private const string ProductName = "Delivery Is The Only Thing I Can Do";
-    private const string AutoBuildKey = "GmtkJamWindowsReleaseBuiltV1";
-    private const string AutoWebBuildKey = "GmtkJamWebReleaseBuiltV1";
     private const string BuildFolder = "Builds/Windows";
     private const string ExecutablePath = BuildFolder + "/Delivery Is The Only Thing I Can Do.exe";
-    private const string ZipPath = "Builds/Delivery-Is-The-Only-Thing-I-Can-Do-Windows.zip";
+    private const string ZipPath = "Builds/Delivery-Is-The-Only-Thing-I-Can-Do-Windows-v1.0.0.zip";
     private const string WebBuildFolder = "Builds/WebGL";
     private const string WebZipPath = "Builds/Delivery-Is-The-Only-Thing-I-Can-Do-WebGL.zip";
-
-    static JamBuildTools()
-    {
-        EditorApplication.delayCall += ConfigureAndBuildOnce;
-        EditorApplication.update += ConfigureAndBuildWebOnce;
-    }
 
     [MenuItem("Tools/GMTK/Build WebGL Release + ZIP")]
     public static void BuildWebRelease()
@@ -149,28 +140,4 @@ public static class JamBuildTools
         EditorUtility.RevealInFinder(ZipPath);
     }
 
-    private static void ConfigureAndBuildOnce()
-    {
-        if (EditorApplication.isPlayingOrWillChangePlaymode
-            || EditorPrefs.GetBool(AutoBuildKey, false))
-        {
-            return;
-        }
-        EditorPrefs.SetBool(AutoBuildKey, true);
-        BuildWindowsRelease();
-    }
-
-    private static void ConfigureAndBuildWebOnce()
-    {
-        if (EditorApplication.isPlayingOrWillChangePlaymode)
-        {
-            return;
-        }
-        EditorApplication.update -= ConfigureAndBuildWebOnce;
-        if (EditorPrefs.GetBool(AutoWebBuildKey, false))
-            return;
-
-        EditorPrefs.SetBool(AutoWebBuildKey, true);
-        BuildWebRelease();
-    }
 }

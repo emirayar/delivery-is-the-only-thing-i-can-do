@@ -9724,7 +9724,8 @@ MonoBehaviour:
   interactionStrength: 1.45
   fadeStart: 90
   fadeEnd: 140
-  grassMaterial: {fileID: 0}
+  grassMaterial: {fileID: 2100000, guid: a4ad3fc3404f45d899440a79d46cc956, type: 2}
+  webGrassMaterial: {fileID: 2100000, guid: b4dbed4153ac4c63a65be26da9515388, type: 2}
   castShadows: 0
 --- !u!114 &1881558078
 MonoBehaviour:
@@ -10035,6 +10036,7 @@ MonoBehaviour:
   parkingLength: 7.2
   parkingSpeedKph: 1.3
   deliveryHoldSeconds: 1.35
+  markerMaterialTemplate: {fileID: 2100000, guid: 9a642e721db63b24a801f3c36e6c91e6, type: 2}
   endingCinematicSeconds: 8
   endingCameraHeight: 62
 --- !u!1 &1884166278

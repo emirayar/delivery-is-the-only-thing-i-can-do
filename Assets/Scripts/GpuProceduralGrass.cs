@@ -19,6 +19,8 @@ public sealed class GpuProceduralGrass : MonoBehaviour
     {
         public GraphicsBuffer buffer;
         public MaterialPropertyBlock properties;
+        public GameObject meshObject;
+        public Mesh mesh;
         public Bounds bounds;
         public int count;
 
@@ -26,6 +28,10 @@ public sealed class GpuProceduralGrass : MonoBehaviour
         {
             buffer?.Release();
             buffer = null;
+            GpuProceduralGrass.DestroySafely(meshObject);
+            GpuProceduralGrass.DestroySafely(mesh);
+            meshObject = null;
+            mesh = null;
         }
     }
 
@@ -124,6 +130,8 @@ public sealed class GpuProceduralGrass : MonoBehaviour
     [Header("Rendering")]
     [Tooltip("GPU procedural grass shader'ını kullanan material. Boşsa sistem otomatik oluşturur.")]
     public Material grassMaterial;
+    [Tooltip("WebGL-compatible mesh grass material used when structured GPU buffers are unavailable.")]
+    public Material webGrassMaterial;
     [Tooltip("Çim gölgelerini açar. Görüntüyü iyileştirebilir fakat GPU maliyetini ciddi artırabilir.")]
     public bool castShadows;
 
@@ -133,6 +141,22 @@ public sealed class GpuProceduralGrass : MonoBehaviour
     private ProceduralVillageSystem village;
     private int generatedSignature;
     private bool ownsMaterial;
+
+    private static bool UsesMeshFallback
+    {
+        get
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            return true;
+#else
+            return false;
+#endif
+        }
+    }
+
+    private Material ActiveMaterial => UsesMeshFallback
+        ? webGrassMaterial
+        : grassMaterial;
 
     public int VisibleBladeCapacity { get; private set; }
     public int DrawCallCount => chunks.Count;
@@ -181,14 +205,14 @@ public sealed class GpuProceduralGrass : MonoBehaviour
         ReleaseChunks();
         EnsureMaterial();
 
-        if (world == null || world.Spline == null || grassMaterial == null)
+        if (world == null || world.Spline == null || ActiveMaterial == null)
             return;
 
         float approximateLength = world.Spline.ApproximateLength(128);
         float grassHalfWidth = GetGrassHalfWidth();
         float usableWidth = Mathf.Max(0f, grassHalfWidth * 2f);
         int totalCount = Mathf.Min(
-            maximumBladeCount,
+            UsesMeshFallback ? Mathf.Min(maximumBladeCount, 32000) : maximumBladeCount,
             Mathf.RoundToInt(approximateLength * usableWidth * bladesPerSquareMeter));
 
         if (totalCount <= 0)
@@ -253,6 +277,15 @@ public sealed class GpuProceduralGrass : MonoBehaviour
                 continue;
             }
             float randomValue = NextFloat(random);
+            if (UsesMeshFallback)
+            {
+                float roadEdge = world.Spline.roadWidth * 0.5f + roadClearance;
+                float roadDensity = Mathf.Clamp01(
+                    (Mathf.Abs(lateral) - roadEdge)
+                    / Mathf.Max(roadEdgeFade, 0.001f));
+                if (randomValue > roadDensity)
+                    continue;
+            }
             float dryVariation = Mathf.Pow(NextFloat(random), 5f);
             float lean = NextFloat(random) * 2f - 1f;
 
@@ -276,6 +309,9 @@ public sealed class GpuProceduralGrass : MonoBehaviour
             return null;
 
         bounds.Expand(new Vector3(4f, maxBladeHeight * 5f, 4f));
+        if (UsesMeshFallback)
+            return BuildMeshChunk(instances, bounds);
+
         var buffer = new GraphicsBuffer(
             GraphicsBuffer.Target.Structured,
             instances.Count,
@@ -294,6 +330,140 @@ public sealed class GpuProceduralGrass : MonoBehaviour
         };
     }
 
+    private GrassChunk BuildMeshChunk(
+        List<GrassInstance> instances,
+        Bounds worldBounds)
+    {
+        int rootCount = instances.Count;
+        var vertices = new Vector3[rootCount * 8];
+        var colors = new Color[rootCount * 8];
+        var uvs = new Vector2[rootCount * 8];
+        var indices = new int[rootCount * 12];
+
+        for (int i = 0; i < rootCount; i++)
+        {
+            GrassInstance instance = instances[i];
+            Vector3 rootWorld = instance.positionRandom;
+            Vector3 root = transform.InverseTransformPoint(rootWorld);
+            float randomValue = instance.positionRandom.w;
+            float height = Mathf.Lerp(
+                minBladeHeight,
+                maxBladeHeight,
+                Mathf.Repeat(randomValue * 17.37f, 1f));
+            float halfWidth = Mathf.Lerp(
+                minBladeWidth,
+                maxBladeWidth,
+                Mathf.Repeat(randomValue * 31.73f, 1f));
+            float angle = randomValue * Mathf.PI * 2f;
+            Vector3 sideA = new(Mathf.Cos(angle), 0f, Mathf.Sin(angle));
+            Vector3 sideB = new(-sideA.z, 0f, sideA.x);
+            Color rootColor = Color.Lerp(
+                baseColor,
+                dryColor,
+                instance.parameters.y);
+            Color topColor = Color.Lerp(
+                tipColor,
+                dryColor,
+                instance.parameters.y);
+            int vertex = i * 8;
+
+            WriteBlade(
+                vertices,
+                colors,
+                uvs,
+                vertex,
+                root,
+                sideA,
+                halfWidth,
+                height,
+                rootColor,
+                topColor);
+            WriteBlade(
+                vertices,
+                colors,
+                uvs,
+                vertex + 4,
+                root,
+                sideB,
+                halfWidth,
+                height,
+                rootColor,
+                topColor);
+
+            int triangle = i * 12;
+            WriteQuad(indices, triangle, vertex);
+            WriteQuad(indices, triangle + 6, vertex + 4);
+        }
+
+        var mesh = new Mesh
+        {
+            name = "WebGL Grass Chunk",
+            indexFormat = IndexFormat.UInt32
+        };
+        mesh.vertices = vertices;
+        mesh.colors = colors;
+        mesh.uv = uvs;
+        mesh.SetIndices(indices, MeshTopology.Triangles, 0, false);
+        mesh.bounds = new Bounds(
+            transform.InverseTransformPoint(worldBounds.center),
+            worldBounds.size);
+
+        var chunkObject = new GameObject("WebGL Grass Chunk");
+        chunkObject.layer = gameObject.layer;
+        chunkObject.transform.SetParent(transform, false);
+        chunkObject.AddComponent<MeshFilter>().sharedMesh = mesh;
+        MeshRenderer renderer = chunkObject.AddComponent<MeshRenderer>();
+        renderer.sharedMaterial = webGrassMaterial;
+        renderer.shadowCastingMode = castShadows
+            ? ShadowCastingMode.On
+            : ShadowCastingMode.Off;
+        renderer.receiveShadows = true;
+
+        return new GrassChunk
+        {
+            meshObject = chunkObject,
+            mesh = mesh,
+            bounds = worldBounds,
+            count = rootCount
+        };
+    }
+
+    private static void WriteBlade(
+        Vector3[] vertices,
+        Color[] colors,
+        Vector2[] uvs,
+        int start,
+        Vector3 root,
+        Vector3 side,
+        float halfWidth,
+        float height,
+        Color rootColor,
+        Color topColor)
+    {
+        vertices[start] = root - side * halfWidth;
+        vertices[start + 1] = root + side * halfWidth;
+        vertices[start + 2] =
+            root - side * halfWidth * 0.18f + Vector3.up * height;
+        vertices[start + 3] =
+            root + side * halfWidth * 0.18f + Vector3.up * height;
+        colors[start] = colors[start + 1] = rootColor;
+        colors[start + 2] = colors[start + 3] = topColor;
+        uvs[start] = new Vector2(0f, 0f);
+        uvs[start + 1] = new Vector2(1f, 0f);
+        uvs[start + 2] = new Vector2(0f, 1f);
+        uvs[start + 3] = new Vector2(1f, 1f);
+    }
+
+    private static void WriteQuad(int[] indices, int start, int vertex)
+    {
+        indices[start] = vertex;
+        indices[start + 1] = vertex + 2;
+        indices[start + 2] = vertex + 1;
+        indices[start + 3] = vertex + 1;
+        indices[start + 4] = vertex + 2;
+        indices[start + 5] = vertex + 3;
+    }
+
     private void OnBeginCameraRendering(
         ScriptableRenderContext context,
         Camera renderingCamera)
@@ -309,13 +479,16 @@ public sealed class GpuProceduralGrass : MonoBehaviour
         EnsureMaterial();
         if (world == null)
             world = GetComponent<ProceduralRibbonWorld>();
-        if (world == null || grassMaterial == null)
+        if (world == null || ActiveMaterial == null)
             return;
 
         if (generatedSignature != CalculateSignature() || chunks.Count == 0)
             Rebuild();
 
         UpdateMaterial();
+        if (UsesMeshFallback)
+            return;
+
         Plane[] planes = GeometryUtility.CalculateFrustumPlanes(renderingCamera);
 
         foreach (GrassChunk chunk in chunks)
@@ -339,47 +512,39 @@ public sealed class GpuProceduralGrass : MonoBehaviour
 
     private void UpdateMaterial()
     {
-        grassMaterial.SetColor(BaseColorId, baseColor);
-        grassMaterial.SetColor(TipColorId, tipColor);
-        grassMaterial.SetColor(DryColorId, dryColor);
-        grassMaterial.SetFloat(MinBladeHeightId, minBladeHeight);
-        grassMaterial.SetFloat(MaxBladeHeightId, maxBladeHeight);
-        grassMaterial.SetFloat(MinBladeWidthId, minBladeWidth);
-        grassMaterial.SetFloat(MaxBladeWidthId, maxBladeWidth);
-        grassMaterial.SetFloat(WindStrengthId, windStrength);
-        grassMaterial.SetFloat(WindScaleId, windScale);
-        grassMaterial.SetFloat(WindSpeedId, windSpeed);
-        grassMaterial.SetFloat(
+        Material material = ActiveMaterial;
+        material.SetColor(BaseColorId, baseColor);
+        material.SetColor(TipColorId, tipColor);
+        material.SetColor(DryColorId, dryColor);
+        material.SetFloat(MinBladeHeightId, minBladeHeight);
+        material.SetFloat(MaxBladeHeightId, maxBladeHeight);
+        material.SetFloat(MinBladeWidthId, minBladeWidth);
+        material.SetFloat(MaxBladeWidthId, maxBladeWidth);
+        material.SetFloat(WindStrengthId, windStrength);
+        material.SetFloat(WindScaleId, windScale);
+        material.SetFloat(WindSpeedId, windSpeed);
+        material.SetFloat(
             RoadHalfWidthId,
             world.Spline.roadWidth * 0.5f);
-        grassMaterial.SetFloat(RoadClearanceId, roadClearance);
-        grassMaterial.SetFloat(RoadEdgeFadeId, roadEdgeFade);
-        grassMaterial.SetFloat(FadeStartId, fadeStart);
-        grassMaterial.SetFloat(FadeEndId, fadeEnd);
+        material.SetFloat(RoadClearanceId, roadClearance);
+        material.SetFloat(RoadEdgeFadeId, roadEdgeFade);
+        material.SetFloat(FadeStartId, fadeStart);
+        material.SetFloat(FadeEndId, fadeEnd);
 
         Vector3 interactionPosition = interactor != null
             ? interactor.position
             : new Vector3(100000f, 100000f, 100000f);
-        grassMaterial.SetVector(InteractorPositionId, interactionPosition);
-        grassMaterial.SetFloat(InteractionRadiusId, interactionRadius);
-        grassMaterial.SetFloat(InteractionStrengthId, interactionStrength);
+        material.SetVector(InteractorPositionId, interactionPosition);
+        material.SetFloat(InteractionRadiusId, interactionRadius);
+        material.SetFloat(InteractionStrengthId, interactionStrength);
     }
 
     private void EnsureMaterial()
     {
-        if (grassMaterial != null)
-            return;
-
-        Shader shader = Shader.Find("GMTK/GPU Procedural Grass");
-        if (shader == null)
-            return;
-
-        grassMaterial = new Material(shader)
-        {
-            name = "Generated GPU Procedural Grass",
-            hideFlags = HideFlags.HideAndDontSave
-        };
-        ownsMaterial = true;
+        if (ActiveMaterial == null)
+            Debug.LogError(
+                "Grass material asset is missing for the current platform.",
+                this);
     }
 
     private int CalculateSignature()
