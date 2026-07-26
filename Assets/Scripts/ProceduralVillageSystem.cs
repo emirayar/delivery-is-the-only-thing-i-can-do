@@ -6,6 +6,23 @@ using UnityEngine.Rendering;
 [RequireComponent(typeof(ProceduralRibbonWorld))]
 public sealed class ProceduralVillageSystem : MonoBehaviour
 {
+    private struct GrassExclusion
+    {
+        public Vector2 center;
+        public Vector2 right;
+        public Vector2 forward;
+        public Vector2 halfSize;
+
+        public bool Contains(Vector3 point, float padding)
+        {
+            Vector2 delta = new(point.x - center.x, point.z - center.y);
+            return Mathf.Abs(Vector2.Dot(delta, right))
+                       <= halfSize.x + padding
+                && Mathf.Abs(Vector2.Dot(delta, forward))
+                       <= halfSize.y + padding;
+        }
+    }
+
     [Header("Village Layout")]
     [Tooltip("Aynı seed aynı ev, ahır ve çatı dağılımını üretir.")]
     public int villageSeed = 42057;
@@ -75,6 +92,8 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
     public GameObject[] drivewayPrefabs;
     [Tooltip("Ev giriş patikasının metre cinsinden genişliği.")]
     [Range(0.8f, 3f)] public float drivewayWidth = 1.6f;
+    [Tooltip("Patikanın terrain kıvrımlarını takip etmek için bölüneceği en uzun parça. Küçük değer zemine daha sıkı oturur.")]
+    [Range(1f, 4f)] public float drivewayMaximumSegmentLength = 1.8f;
     [Tooltip("Bahçe çevresinde kullanılacak çit modeli.")]
     public GameObject fencePrefab;
     [Tooltip("Bir ev parselinin çitli bahçeye sahip olma ihtimali.")]
@@ -87,6 +106,20 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
     [Range(0f, 1f)] public float gardenTreeChance = 0.82f;
     [Tooltip("Çitli bahçelerde üretilecek minimum ve maksimum ağaç sayısı.")]
     public Vector2Int gardenTreesPerLot = new(2, 3);
+    [Tooltip("Komşu evlerin arasındaki boşlukta ek ağaç kümesi oluşma ihtimali.")]
+    [Range(0f, 1f)] public float interHouseTreeChance = 0.9f;
+    [Tooltip("Her dolu parselin evler arası sınırında üretilecek minimum ve maksimum ağaç sayısı.")]
+    public Vector2Int interHouseTreesPerLot = new(1, 2);
+    [Tooltip("Evlerin yol tarafındaki parsel sınırında seyrek bir ağaç-çit sırası oluşma ihtimali.")]
+    [Range(0f, 1f)] public float roadsideTreeLineChance = 0.74f;
+    [Tooltip("Her yol tarafı parsel sınırında üretilecek normal ağaç sayısı.")]
+    public Vector2Int roadsideTreesPerBoundary = new(1, 1);
+    [Tooltip("Köy siluetine nadir uzun vurgular eklemek için kullanılacak büyük ağaç modelleri.")]
+    public GameObject[] tallTreePrefabs;
+    [Tooltip("Bir parsel sınırında normal ağaçlara ek olarak uzun bir ağaç oluşma ihtimali.")]
+    [Range(0f, 1f)] public float rareTallTreeChance = 0.08f;
+    [Tooltip("Nadir uzun ağaçların hedef dünya yüksekliği.")]
+    public Vector2 tallTreeHeightRange = new(10f, 16f);
     [Tooltip("Bahçe ağaçlarının hedef dünya yüksekliği.")]
     public Vector2 gardenTreeHeightRange = new(3.5f, 6.5f);
 
@@ -104,6 +137,10 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
     private readonly List<Material> runtimeMaterials = new();
     private readonly Dictionary<Material, Material>
         terracottaMaterialVariants = new();
+    private readonly List<GrassExclusion> grassExclusions = new();
+    private const float GrassExclusionCellSize = 24f;
+    private readonly Dictionary<Vector2Int, List<int>> grassExclusionGrid =
+        new();
     private ProceduralRibbonWorld world;
     private Mesh villageMesh;
     private MeshFilter villageFilter;
@@ -136,6 +173,10 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
             minimumPrefabScale,
             maximumPrefabScale);
         fenceGateWidth = Mathf.Max(1.5f, fenceGateWidth);
+        drivewayMaximumSegmentLength = Mathf.Clamp(
+            drivewayMaximumSegmentLength,
+            1f,
+            4f);
         minimumPrefabWorldHeight = Mathf.Max(2.5f, minimumPrefabWorldHeight);
         buildingFoundationClearance = Mathf.Max(
             0.05f,
@@ -143,6 +184,27 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
         gardenTreesPerLot = new Vector2Int(
             Mathf.Max(0, Mathf.Min(gardenTreesPerLot.x, gardenTreesPerLot.y)),
             Mathf.Max(0, Mathf.Max(gardenTreesPerLot.x, gardenTreesPerLot.y)));
+        interHouseTreesPerLot = new Vector2Int(
+            Mathf.Max(0, Mathf.Min(
+                interHouseTreesPerLot.x,
+                interHouseTreesPerLot.y)),
+            Mathf.Max(0, Mathf.Max(
+                interHouseTreesPerLot.x,
+                interHouseTreesPerLot.y)));
+        roadsideTreesPerBoundary = new Vector2Int(
+            Mathf.Max(0, Mathf.Min(
+                roadsideTreesPerBoundary.x,
+                roadsideTreesPerBoundary.y)),
+            Mathf.Max(0, Mathf.Max(
+                roadsideTreesPerBoundary.x,
+                roadsideTreesPerBoundary.y)));
+        tallTreeHeightRange = new Vector2(
+            Mathf.Max(2f, Mathf.Min(
+                tallTreeHeightRange.x,
+                tallTreeHeightRange.y)),
+            Mathf.Max(2f, Mathf.Max(
+                tallTreeHeightRange.x,
+                tallTreeHeightRange.y)));
         gardenTreeHeightRange = new Vector2(
             Mathf.Max(0.5f, Mathf.Min(
                 gardenTreeHeightRange.x,
@@ -181,6 +243,8 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
             return;
 
         EnsureRenderer();
+        grassExclusions.Clear();
+        grassExclusionGrid.Clear();
         bool prefabMode = HasBuildingPrefabs();
         ClearPrefabBuildings();
         villageRenderer.enabled = !prefabMode;
@@ -350,6 +414,60 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
                         side * (Mathf.Abs(houseLateral) + 4.5f),
                         random);
                 }
+
+                if (NextFloat(random) < interHouseTreeChance)
+                {
+                    int interHouseCount = random.Next(
+                        interHouseTreesPerLot.x,
+                        interHouseTreesPerLot.y + 1);
+                    float boundaryOffset = lotSpacing * 0.38f / roadLength;
+                    for (int treeIndex = 0;
+                         treeIndex < interHouseCount;
+                         treeIndex++)
+                    {
+                        float direction = treeIndex % 2 == 0 ? 1f : -1f;
+                        float treeT = Mathf.Clamp01(
+                            t + direction * boundaryOffset
+                            + NextRange(random, -1.5f, 1.5f) / roadLength);
+                        float treeLateral = side * NextRange(
+                            random,
+                            Mathf.Abs(houseLateral) + 1.5f,
+                            Mathf.Abs(houseLateral) + 5f);
+                        PlaceGardenTree(treeT, treeLateral, random);
+                    }
+                }
+
+                if (NextFloat(random) < roadsideTreeLineChance)
+                {
+                    float boundaryT = Mathf.Clamp01(
+                        t + lotSpacing * 0.4f / roadLength);
+                    int roadsideCount = random.Next(
+                        roadsideTreesPerBoundary.x,
+                        roadsideTreesPerBoundary.y + 1);
+                    for (int treeIndex = 0;
+                         treeIndex < roadsideCount;
+                         treeIndex++)
+                    {
+                        float treeT = Mathf.Clamp01(
+                            boundaryT + NextRange(random, -1.8f, 1.8f)
+                            / roadLength);
+                        float treeLateral = side * (
+                            roadHalfWidth + NextRange(random, 7f, 10.5f));
+                        PlaceGardenTree(treeT, treeLateral, random);
+                    }
+
+                    if (NextFloat(random) < rareTallTreeChance)
+                    {
+                        float tallLateral = side * (
+                            roadHalfWidth + NextRange(random, 8.5f, 12.5f));
+                        PlaceTree(
+                            tallTreePrefabs,
+                            boundaryT,
+                            tallLateral,
+                            tallTreeHeightRange,
+                            random);
+                    }
+                }
             }
 
             if (!HasBuildingPrefabs() && NextFloat(random) < barnChance)
@@ -423,6 +541,16 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
         List<Vector2> uv,
         List<int>[] triangles)
     {
+        Vector3 right3 = rotation * Vector3.right;
+        Vector3 forward3 = rotation * Vector3.forward;
+        AddGrassExclusion(new GrassExclusion
+        {
+            center = new Vector2(surfacePosition.x, surfacePosition.z),
+            right = new Vector2(right3.x, right3.z).normalized,
+            forward = new Vector2(forward3.x, forward3.z).normalized,
+            halfSize = new Vector2(size.x, size.z) * 0.5f
+        });
+
         if (HasBuildingPrefabs())
         {
             PlaceBuildingPrefab(surfacePosition, rotation, size, random);
@@ -452,6 +580,53 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
             uv,
             triangles);
         GeneratedBuildingCount++;
+    }
+
+    public bool IsGrassBlocked(Vector3 worldPosition, float padding)
+    {
+        Vector2Int cell = GrassCell(new Vector2(
+            worldPosition.x,
+            worldPosition.z));
+        if (!grassExclusionGrid.TryGetValue(cell, out List<int> indices))
+            return false;
+
+        for (int i = 0; i < indices.Count; i++)
+        {
+            if (grassExclusions[indices[i]].Contains(worldPosition, padding))
+                return true;
+        }
+        return false;
+    }
+
+    private void AddGrassExclusion(GrassExclusion exclusion)
+    {
+        int index = grassExclusions.Count;
+        grassExclusions.Add(exclusion);
+        float radius = exclusion.halfSize.magnitude + 1f;
+        Vector2Int minimum = GrassCell(exclusion.center - Vector2.one * radius);
+        Vector2Int maximum = GrassCell(exclusion.center + Vector2.one * radius);
+        for (int y = minimum.y; y <= maximum.y; y++)
+        {
+            for (int x = minimum.x; x <= maximum.x; x++)
+            {
+                var cell = new Vector2Int(x, y);
+                if (!grassExclusionGrid.TryGetValue(
+                        cell,
+                        out List<int> indices))
+                {
+                    indices = new List<int>();
+                    grassExclusionGrid.Add(cell, indices);
+                }
+                indices.Add(index);
+            }
+        }
+    }
+
+    private static Vector2Int GrassCell(Vector2 position)
+    {
+        return new Vector2Int(
+            Mathf.FloorToInt(position.x / GrassExclusionCellSize),
+            Mathf.FloorToInt(position.y / GrassExclusionCellSize));
     }
 
     private bool HasBuildingPrefabs()
@@ -600,7 +775,7 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
             t,
             endLateral,
             drivewayWidth,
-            0.045f);
+            0.012f);
     }
 
     private void PlaceFencedGarden(
@@ -746,6 +921,57 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
             instance.transform.position += Vector3.up
                 * (((start.y + end.y) * 0.5f) + clearance - bounds.min.y);
         }
+        AddFenceBoxCollider(instance);
+    }
+
+    private static void AddFenceBoxCollider(GameObject instance)
+    {
+        MeshFilter[] filters = instance.GetComponentsInChildren<MeshFilter>();
+        bool hasBounds = false;
+        Bounds localBounds = default;
+        foreach (MeshFilter filter in filters)
+        {
+            if (filter.sharedMesh == null)
+                continue;
+            Bounds meshBounds = filter.sharedMesh.bounds;
+            Vector3 center = meshBounds.center;
+            Vector3 extents = meshBounds.extents;
+            for (int x = -1; x <= 1; x += 2)
+            {
+                for (int y = -1; y <= 1; y += 2)
+                {
+                    for (int z = -1; z <= 1; z += 2)
+                    {
+                        Vector3 meshCorner = center + Vector3.Scale(
+                            extents,
+                            new Vector3(x, y, z));
+                        Vector3 localCorner = instance.transform.InverseTransformPoint(
+                            filter.transform.TransformPoint(meshCorner));
+                        if (!hasBounds)
+                        {
+                            localBounds = new Bounds(localCorner, Vector3.zero);
+                            hasBounds = true;
+                        }
+                        else
+                        {
+                            localBounds.Encapsulate(localCorner);
+                        }
+                    }
+                }
+            }
+        }
+        if (!hasBounds)
+            return;
+
+        BoxCollider collider = instance.GetComponent<BoxCollider>();
+        if (collider == null)
+            collider = instance.AddComponent<BoxCollider>();
+        collider.center = localBounds.center;
+        collider.size = new Vector3(
+            Mathf.Max(0.08f, localBounds.size.x),
+            Mathf.Max(0.45f, localBounds.size.y),
+            Mathf.Max(0.08f, localBounds.size.z));
+        collider.isTrigger = false;
     }
 
     private void PlaceLinearPrefab(
@@ -760,30 +986,85 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
         if (prefab == null)
             return;
 
-        world.SampleSurface(
-            Mathf.Clamp01(startT),
+        SampleLinearSurfacePoint(
+            startT,
             startLateral,
-            out Vector3 start,
-            out _);
-        float roadHalfWidth = world.Spline.roadWidth * 0.5f;
-        if (Mathf.Abs(startLateral) <= roadHalfWidth + 0.75f)
-        {
-            world.Spline.GetFrame(
-                Mathf.Clamp01(startT),
-                out Vector3 roadCenter,
-                out _,
-                out Vector3 roadRight);
-            start = roadCenter + roadRight * startLateral;
-            start.y = roadCenter.y + world.roadSurfaceClearance + 0.025f;
-        }
-        world.SampleSurface(
-            Mathf.Clamp01(endT),
+            clearance,
+            out Vector3 fullStart);
+        SampleLinearSurfacePoint(
+            endT,
             endLateral,
-            out Vector3 end,
-            out _);
+            clearance,
+            out Vector3 fullEnd);
+        float horizontalLength = Vector2.Distance(
+            new Vector2(fullStart.x, fullStart.z),
+            new Vector2(fullEnd.x, fullEnd.z));
+        if (horizontalLength < 0.3f)
+            return;
+
+        int segmentCount = Mathf.Max(
+            1,
+            Mathf.CeilToInt(
+                horizontalLength
+                / Mathf.Max(1f, drivewayMaximumSegmentLength)));
+        for (int segment = 0; segment < segmentCount; segment++)
+        {
+            float a = segment / (float)segmentCount;
+            float b = (segment + 1f) / segmentCount;
+            SampleLinearSurfacePoint(
+                Mathf.Lerp(startT, endT, a),
+                Mathf.Lerp(startLateral, endLateral, a),
+                clearance,
+                out Vector3 start);
+            SampleLinearSurfacePoint(
+                Mathf.Lerp(startT, endT, b),
+                Mathf.Lerp(startLateral, endLateral, b),
+                clearance,
+                out Vector3 end);
+            PlaceLinearPrefabSegment(
+                prefab,
+                start,
+                end,
+                targetWidth,
+                clearance,
+                segment);
+        }
+    }
+
+    private void SampleLinearSurfacePoint(
+        float t,
+        float lateral,
+        float clearance,
+        out Vector3 point)
+    {
+        t = Mathf.Clamp01(t);
+        world.SampleSurface(t, lateral, out point, out _);
+        float roadHalfWidth = world.Spline.roadWidth * 0.5f;
+        if (Mathf.Abs(lateral) > roadHalfWidth + 0.75f)
+            return;
+
+        world.Spline.GetFrame(
+            t,
+            out Vector3 roadCenter,
+            out _,
+            out Vector3 roadRight);
+        point = roadCenter + roadRight * lateral;
+        // The final local-up correction adds clearance. Subtract it here so
+        // the first path slab meets the asphalt instead of hovering above it.
+        point.y = roadCenter.y + world.roadSurfaceClearance - clearance + 0.003f;
+    }
+
+    private void PlaceLinearPrefabSegment(
+        GameObject prefab,
+        Vector3 start,
+        Vector3 end,
+        float targetWidth,
+        float clearance,
+        int segmentIndex)
+    {
         Vector3 direction = end - start;
         float length = direction.magnitude;
-        if (length < 0.3f)
+        if (length < 0.2f)
             return;
 
         GameObject instance = Instantiate(
@@ -791,7 +1072,7 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
             (start + end) * 0.5f,
             Quaternion.LookRotation(direction.normalized, Vector3.up),
             prefabRoot);
-        instance.name = prefab.name;
+        instance.name = $"{prefab.name} {segmentIndex + 1}";
         instance.hideFlags = HideFlags.DontSave;
         if (!TryGetRendererBounds(instance, out Bounds bounds))
             return;
@@ -814,14 +1095,53 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
             scale.x *= targetWidth / Mathf.Max(0.01f, rightSize);
         instance.transform.localScale = scale;
 
-        if (TryGetRendererBounds(instance, out bounds))
+        if (TryGetLowestOffsetAlongUp(instance, out float lowestOffset))
         {
-            float surfaceY = (start.y + end.y) * 0.5f;
-            instance.transform.position += Vector3.up
-                * (surfaceY + clearance - bounds.min.y);
+            // Renderer.bounds.min.y is a world AABB value. On a slope its
+            // downhill corner pulls the whole path into the air. Measuring
+            // along the prefab's own up axis keeps the pitched slab grounded.
+            instance.transform.position += instance.transform.up
+                * (clearance - lowestOffset);
         }
 
         AddMeshColliders(instance);
+    }
+
+    private static bool TryGetLowestOffsetAlongUp(
+        GameObject instance,
+        out float lowestOffset)
+    {
+        lowestOffset = float.PositiveInfinity;
+        Vector3 origin = instance.transform.position;
+        Vector3 up = instance.transform.up;
+        bool found = false;
+        foreach (MeshFilter filter in instance.GetComponentsInChildren<MeshFilter>())
+        {
+            if (filter.sharedMesh == null)
+                continue;
+            Bounds bounds = filter.sharedMesh.bounds;
+            Vector3 center = bounds.center;
+            Vector3 extents = bounds.extents;
+            for (int x = -1; x <= 1; x += 2)
+            {
+                for (int y = -1; y <= 1; y += 2)
+                {
+                    for (int z = -1; z <= 1; z += 2)
+                    {
+                        Vector3 localCorner = center + Vector3.Scale(
+                            extents,
+                            new Vector3(x, y, z));
+                        Vector3 worldCorner = filter.transform.TransformPoint(
+                            localCorner);
+                        lowestOffset = Mathf.Min(
+                            lowestOffset,
+                            Vector3.Dot(worldCorner - origin, up));
+                        found = true;
+                    }
+                }
+            }
+        }
+        return found;
     }
 
     private static void AddMeshColliders(GameObject instance)
@@ -843,7 +1163,22 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
         float lateral,
         System.Random random)
     {
-        GameObject prefab = PickRandom(gardenTreePrefabs, random);
+        PlaceTree(
+            gardenTreePrefabs,
+            t,
+            lateral,
+            gardenTreeHeightRange,
+            random);
+    }
+
+    private void PlaceTree(
+        GameObject[] prefabs,
+        float t,
+        float lateral,
+        Vector2 heightRange,
+        System.Random random)
+    {
+        GameObject prefab = PickRandom(prefabs, random);
         if (prefab == null)
             return;
 
@@ -861,8 +1196,8 @@ public sealed class ProceduralVillageSystem : MonoBehaviour
 
         float height = NextRange(
             random,
-            gardenTreeHeightRange.x,
-            gardenTreeHeightRange.y);
+            heightRange.x,
+            heightRange.y);
         instance.transform.localScale *= height
             / Mathf.Max(0.01f, bounds.size.y);
         if (TryGetRendererBounds(instance, out bounds))

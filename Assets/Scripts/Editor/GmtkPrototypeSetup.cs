@@ -9,7 +9,7 @@ public static class GmtkPrototypeSetup
     [InitializeOnLoadMethod]
     private static void ScheduleSelectedAssetKitsMigration()
     {
-        string key = "GMTK.SelectedAssetKits.v8."
+        string key = "GMTK.SelectedAssetKits.v12."
                    + Hash128.Compute(Application.dataPath);
         if (EditorPrefs.GetBool(key, false))
             return;
@@ -38,6 +38,9 @@ public static class GmtkPrototypeSetup
             Undo.RecordObject(village, "Use Kenney suburban kit");
             Undo.RecordObject(nature, "Use Quaternius nature kit");
             village.useBuildingPrefabs = true;
+            village.minimumLotSpacing = 16f;
+            village.maximumLotSpacing = 24f;
+            village.lotOccupancy = 0.98f;
             village.buildingPrefabs = LoadModels(
                 "Assets/ThirdPartyAssets/KenneyCityKitSuburban/Models/",
                 "building-type-a.fbx",
@@ -118,8 +121,22 @@ public static class GmtkPrototypeSetup
                 "CommonTree_2.fbx",
                 "CommonTree_3.fbx",
                 "CommonTree_4.fbx");
-            village.gardenTreeChance = 0.96f;
-            village.gardenTreesPerLot = new Vector2Int(2, 3);
+            village.gardenTreeChance = 1f;
+            village.gardenTreesPerLot = new Vector2Int(2, 4);
+            village.interHouseTreeChance = 0.92f;
+            village.interHouseTreesPerLot = new Vector2Int(1, 2);
+            village.roadsideTreeLineChance = 0.74f;
+            village.roadsideTreesPerBoundary = new Vector2Int(1, 1);
+            village.tallTreePrefabs = LoadModels(
+                "Assets/ThirdPartyAssets/QuaterniusStylizedNature/Models/",
+                "Pine_1.fbx",
+                "Pine_2.fbx",
+                "Pine_3.fbx",
+                "CommonTree_4.fbx",
+                "CommonTree_5.fbx",
+                "TwistedTree_1.fbx");
+            village.rareTallTreeChance = 0.08f;
+            village.tallTreeHeightRange = new Vector2(10f, 16f);
             village.gardenTreeHeightRange = new Vector2(3.5f, 6.5f);
 
             world.roadBedDepth = 0.24f;

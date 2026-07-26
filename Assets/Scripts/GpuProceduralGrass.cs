@@ -70,6 +70,10 @@ public sealed class GpuProceduralGrass : MonoBehaviour
     [Min(1000)] public int maximumBladeCount = 360000;
     [Tooltip("Terrain'in dış sınırında çim bırakılmayacak boş kenar mesafesi.")]
     [Min(0f)] public float outerMargin = 1f;
+    [Tooltip("Tarla baslangicinin disina tasacak cimli sinir seridi. Tarla aralarindaki yesil bantlari gorunur tutar.")]
+    [Min(0f)] public float fieldBoundaryReach = 2.5f;
+    [Tooltip("Ev duvarlarinin cevresinde cim cikmayacak guvenlik mesafesi. Evler arasindaki bahce cimini silmemek icin kucuk tutulur.")]
+    [Min(0f)] public float buildingClearance = 0.65f;
 
     [Header("Blade Shape")]
     [Tooltip("Rastgele üretilecek en kısa çim boyu.")]
@@ -126,6 +130,7 @@ public sealed class GpuProceduralGrass : MonoBehaviour
     private readonly List<GrassChunk> chunks = new();
     private ProceduralRibbonWorld world;
     private ProceduralFieldSystem fields;
+    private ProceduralVillageSystem village;
     private int generatedSignature;
     private bool ownsMaterial;
 
@@ -157,6 +162,8 @@ public sealed class GpuProceduralGrass : MonoBehaviour
         bladesPerSquareMeter = Mathf.Max(0.1f, bladesPerSquareMeter);
         longitudinalChunks = Mathf.Clamp(longitudinalChunks, 4, 40);
         maximumBladeCount = Mathf.Max(1000, maximumBladeCount);
+        fieldBoundaryReach = Mathf.Max(0f, fieldBoundaryReach);
+        buildingClearance = Mathf.Max(0f, buildingClearance);
         maxBladeHeight = Mathf.Max(minBladeHeight, maxBladeHeight);
         maxBladeWidth = Mathf.Max(minBladeWidth, maxBladeWidth);
         fadeEnd = Mathf.Max(fadeStart + 1f, fadeEnd);
@@ -170,6 +177,7 @@ public sealed class GpuProceduralGrass : MonoBehaviour
     {
         world = GetComponent<ProceduralRibbonWorld>();
         fields = GetComponent<ProceduralFieldSystem>();
+        village = GetComponent<ProceduralVillageSystem>();
         ReleaseChunks();
         EnsureMaterial();
 
@@ -177,7 +185,8 @@ public sealed class GpuProceduralGrass : MonoBehaviour
             return;
 
         float approximateLength = world.Spline.ApproximateLength(128);
-        float usableWidth = Mathf.Max(0f, world.halfWidth * 2f - outerMargin * 2f);
+        float grassHalfWidth = GetGrassHalfWidth();
+        float usableWidth = Mathf.Max(0f, grassHalfWidth * 2f);
         int totalCount = Mathf.Min(
             maximumBladeCount,
             Mathf.RoundToInt(approximateLength * usableWidth * bladesPerSquareMeter));
@@ -218,8 +227,9 @@ public sealed class GpuProceduralGrass : MonoBehaviour
         Bounds bounds = default;
         int columns = Mathf.Max(1, Mathf.CeilToInt(Mathf.Sqrt(count)));
         int rows = Mathf.Max(1, Mathf.CeilToInt(count / (float)columns));
-        float minOffset = -world.halfWidth + outerMargin;
-        float maxOffset = world.halfWidth - outerMargin;
+        float grassHalfWidth = GetGrassHalfWidth();
+        float minOffset = -grassHalfWidth;
+        float maxOffset = grassHalfWidth;
 
         for (int i = 0; i < count; i++)
         {
@@ -237,6 +247,11 @@ public sealed class GpuProceduralGrass : MonoBehaviour
                 continue;
 
             world.SampleSurface(t, lateral, out Vector3 position, out _);
+            if (village != null
+                && village.IsGrassBlocked(position, buildingClearance))
+            {
+                continue;
+            }
             float randomValue = NextFloat(random);
             float dryVariation = Mathf.Pow(NextFloat(random), 5f);
             float lean = NextFloat(random) * 2f - 1f;
@@ -312,7 +327,7 @@ public sealed class GpuProceduralGrass : MonoBehaviour
                 grassMaterial,
                 chunk.bounds,
                 MeshTopology.Triangles,
-                12,
+                36,
                 chunk.count,
                 renderingCamera,
                 chunk.properties,
@@ -377,12 +392,27 @@ public sealed class GpuProceduralGrass : MonoBehaviour
             hash = hash * 31 + longitudinalChunks;
             hash = hash * 31 + maximumBladeCount;
             hash = hash * 31 + Mathf.RoundToInt(outerMargin * 100f);
+            hash = hash * 31 + Mathf.RoundToInt(fieldBoundaryReach * 100f);
+            hash = hash * 31 + Mathf.RoundToInt(buildingClearance * 100f);
             hash = hash * 31 + (world != null
                 ? Mathf.RoundToInt(world.halfWidth * 100f)
                 : 0);
             hash = hash * 31 + (fields != null ? fields.LayoutVersion : 0);
+            hash = hash * 31 + (village != null
+                ? village.GeneratedBuildingCount
+                : 0);
             return hash;
         }
+    }
+
+    private float GetGrassHalfWidth()
+    {
+        float terrainLimit = Mathf.Max(0f, world.halfWidth - outerMargin);
+        if (fields == null || fields.InnerFieldDistance <= 0f)
+            return terrainLimit;
+        return Mathf.Min(
+            terrainLimit,
+            fields.InnerFieldDistance + fieldBoundaryReach);
     }
 
     private void ReleaseChunks()

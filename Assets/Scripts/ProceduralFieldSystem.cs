@@ -94,6 +94,9 @@ public sealed class ProceduralFieldSystem : MonoBehaviour
 
     public int ParcelCount => leftParcels.Count + rightParcels.Count;
     public int LayoutVersion { get; private set; }
+    public float InnerFieldDistance => world != null && world.Spline != null
+        ? world.Spline.roadWidth * 0.5f + roadsideGap + buildingZoneDepth
+        : 0f;
 
     private void OnEnable()
     {

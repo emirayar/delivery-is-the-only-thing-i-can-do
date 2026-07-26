@@ -13,6 +13,8 @@ public sealed class ProceduralRibbonWorld : MonoBehaviour
     [Min(0.5f)] public float metersPerLengthSegment = 3f;
     [Tooltip("Terrain genişliği boyunca iki vertex arasındaki hedef metre.")]
     [Min(0.5f)] public float metersPerWidthSegment = 4f;
+    [Tooltip("Enine vertexleri yol cevresinde yogunlastirir. 1 esit aralik; 1.8 genis dunyalarda yol omzunu daha puruzsuz yapar.")]
+    [Range(1f, 3f)] public float roadDetailConcentration = 1.8f;
 
     [Header("Resolution")]
     [Tooltip("Yol boyunca terrain örnek sayısı. Artırmak virajları yumuşatır fakat mesh maliyetini yükseltir.")]
@@ -65,6 +67,10 @@ public sealed class ProceduralRibbonWorld : MonoBehaviour
     [Min(0.01f)] public float roadBedDepth = 0.12f;
     [Tooltip("Yol yatağındaki yükseklik farkının asfalt kenarı dışında kaç metrede terrain'e karışacağı.")]
     [Min(0.1f)] public float roadBedShoulder = 1.5f;
+    [Tooltip("Asfalt kenarinda terrain ile yol arasinda birakilacak kucuk dikey fark.")]
+    [Range(0f, 0.1f)] public float roadEdgeDrop = 0.025f;
+    [Tooltip("Yol yataginin asfalt kenarina yaklasirken yukselecegi mesafe.")]
+    [Range(0.25f, 3f)] public float roadEdgeTransitionWidth = 1.25f;
     [Tooltip("Terrain yatağı aşağı alındığında aracın asfaltın kendi fizik yüzeyinde gitmesini sağlar.")]
     public bool addRoadCollider = true;
     [Tooltip("Z-fighting'i önlemek için asfaltın spline merkezinin üzerinde tutulduğu küçük yükseklik.")]
@@ -110,6 +116,10 @@ public sealed class ProceduralRibbonWorld : MonoBehaviour
         halfWidth = Mathf.Max(10f, halfWidth);
         metersPerLengthSegment = Mathf.Max(0.5f, metersPerLengthSegment);
         metersPerWidthSegment = Mathf.Max(0.5f, metersPerWidthSegment);
+        roadDetailConcentration = Mathf.Clamp(
+            roadDetailConcentration,
+            1f,
+            3f);
         valleyFloorWidth = Mathf.Max(0f, valleyFloorWidth);
         valleyRisePer100Meters = Mathf.Max(0f, valleyRisePer100Meters);
         valleyCurve = Mathf.Clamp(valleyCurve, 1f, 3f);
@@ -122,6 +132,11 @@ public sealed class ProceduralRibbonWorld : MonoBehaviour
             valleyVariationFrequency);
         roadBedDepth = Mathf.Max(0.01f, roadBedDepth);
         roadBedShoulder = Mathf.Max(0.1f, roadBedShoulder);
+        roadEdgeDrop = Mathf.Clamp(roadEdgeDrop, 0f, 0.1f);
+        roadEdgeTransitionWidth = Mathf.Clamp(
+            roadEdgeTransitionWidth,
+            0.25f,
+            3f);
         roadSurfaceClearance = Mathf.Max(0.01f, roadSurfaceClearance);
         settlementFlatWidth = Mathf.Max(5f, settlementFlatWidth);
 
@@ -217,14 +232,27 @@ public sealed class ProceduralRibbonWorld : MonoBehaviour
                         * Mathf.Pow(slope01, valleyCurve)
                         * riseMultiplier;
         }
-        float bedBlend = 1f - Mathf.SmoothStep(
+        float roadBedBlend = 1f - Mathf.SmoothStep(
             0f,
             1f,
             Mathf.InverseLerp(
+                Mathf.Max(0f, roadHalfWidth - roadEdgeTransitionWidth),
                 roadHalfWidth,
-                roadHalfWidth + roadBedShoulder,
                 Mathf.Abs(lateralOffset)));
-        position.y -= roadBedDepth * bedBlend;
+        float outsideRoadDistance = Mathf.Max(
+            0f,
+            Mathf.Abs(lateralOffset) - roadHalfWidth);
+        float shoulderBlend = 1f - Mathf.SmoothStep(
+            0f,
+            1f,
+            Mathf.InverseLerp(
+                0f,
+                roadBedShoulder,
+                outsideRoadDistance));
+        position.y -= roadBedDepth * roadBedBlend;
+        position.y += Mathf.Max(
+            0f,
+            roadSurfaceClearance - roadEdgeDrop) * shoulderBlend;
         normal = Vector3.up;
     }
 
@@ -328,7 +356,7 @@ public sealed class ProceduralRibbonWorld : MonoBehaviour
             for (int column = 0; column < columns; column++)
             {
                 float across = column / (float)widthSegments;
-                float offset = Mathf.Lerp(-halfWidth, halfWidth, across);
+                float offset = GetLateralOffset(across);
                 SampleSurface(t, offset, out Vector3 worldPosition, out _);
                 int index = row * columns + column;
                 vertices[index] = transform.InverseTransformPoint(worldPosition);
@@ -347,10 +375,7 @@ public sealed class ProceduralRibbonWorld : MonoBehaviour
                 int d = a + 1;
 
                 float centerAcross = (column + 0.5f) / widthSegments;
-                float centerOffset = Mathf.Lerp(
-                    -halfWidth,
-                    halfWidth,
-                    centerAcross);
+                float centerOffset = GetLateralOffset(centerAcross);
                 float roadHalfWidth = Spline.roadWidth * 0.5f;
                 if (Mathf.Abs(centerOffset) < roadHalfWidth - 0.25f)
                     continue;
@@ -456,6 +481,16 @@ public sealed class ProceduralRibbonWorld : MonoBehaviour
         {
             existingRoadCollider.enabled = false;
         }
+    }
+
+    private float GetLateralOffset(float across)
+    {
+        float signed = across * 2f - 1f;
+        return Mathf.Sign(signed)
+             * halfWidth
+             * Mathf.Pow(
+                 Mathf.Abs(signed),
+                 roadDetailConcentration);
     }
 
     private float SampleHeight(float x, float z)

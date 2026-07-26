@@ -100,22 +100,34 @@ Shader "GMTK/GPU Procedural Grass"
                 float dryVariation = instance.parameters.y;
                 float lean = instance.parameters.z;
 
+                uint clusterBlade = vertexID / 12;
+                uint bladeVertexID = vertexID % 12;
+                float bladeRandom = Hash11(
+                    randomValue + clusterBlade * 19.19 + 0.37);
+                float clusterAngle = Hash11(
+                    randomValue + clusterBlade * 7.73 + 4.11)
+                    * 6.2831853;
+                float clusterRadius = sqrt(Hash11(
+                    randomValue + clusterBlade * 13.31 + 8.29)) * 0.34;
+                root.xz += float2(cos(clusterAngle), sin(clusterAngle))
+                         * clusterRadius;
+
                 static const uint cornerLookup[6] = { 0, 2, 1, 1, 2, 3 };
-                uint plane = vertexID / 6;
-                uint corner = cornerLookup[vertexID % 6];
+                uint plane = bladeVertexID / 6;
+                uint corner = cornerLookup[bladeVertexID % 6];
                 float heightMask = corner >= 2 ? 1.0 : 0.0;
                 float sideSign = (corner == 0 || corner == 2) ? -1.0 : 1.0;
 
-                float angle = randomValue * 6.2831853 + plane * 1.5707963;
+                float angle = bladeRandom * 6.2831853 + plane * 1.5707963;
                 float2 side = Rotate2D(float2(1.0, 0.0), angle);
                 float bladeHeight = lerp(
                     _MinBladeHeight,
                     _MaxBladeHeight,
-                    Hash11(randomValue + 2.17));
+                    Hash11(bladeRandom + 2.17));
                 float bladeWidth = lerp(
                     _MinBladeWidth,
                     _MaxBladeWidth,
-                    Hash11(randomValue + 7.31));
+                    Hash11(bladeRandom + 7.31));
 
                 float roadEdge = _RoadHalfWidth + _RoadClearance;
                 float roadDensity = saturate(
