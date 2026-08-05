@@ -19,12 +19,22 @@ Material:
   m_CustomRenderQueue: -1
   stringTagMap: {}
   disabledShaderPasses: []
-  m_LockedProperties:
+  m_LockedProperties: 
   m_SavedProperties:
     serializedVersion: 3
     m_TexEnvs: []
     m_Ints: []
-    m_Floats: []
-    m_Colors: []
+    m_Floats:
+    - _MaxBladeHeight: 0.48
+    - _MaxBladeWidth: 0.05
+    - _MinBladeHeight: 0.18
+    - _MinBladeWidth: 0.025
+    - _WindScale: 0.16
+    - _WindSpeed: 1.4
+    - _WindStrength: 0.235
+    m_Colors:
+    - _BaseColor: {r: 0.055, g: 0.19, b: 0.025, a: 1}
+    - _DryColor: {r: 0.68, g: 0.53, b: 0.12, a: 1}
+    - _TipColor: {r: 0.39080295, g: 0.6901961, b: 0.121568635, a: 1}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
